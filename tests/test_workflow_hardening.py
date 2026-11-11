@@ -238,7 +238,7 @@ class TestWorkflowReplay(unittest.TestCase):
         with mock.patch.object(d, "gh", side_effect=gh), \
                 mock.patch.object(d, "issue", side_effect=lambda *a, **kw: copy.deepcopy(record)), \
                 mock.patch.object(d, "set_labels", side_effect=labels), \
-                mock.patch.object(d, "active_issues", side_effect=lambda: [copy.deepcopy(record)] if record["state"] == "OPEN" else []):
+                mock.patch.object(d, "active_issues", side_effect=lambda *_: [copy.deepcopy(record)] if record["state"] == "OPEN" else []):
             run("a", "propose", "999", "--why", "Repair workflow reliability", "--done-when", "tests pass")
             self.assertIn("deputy review", run("b", "next"))
             for member in ("b", "lead"):

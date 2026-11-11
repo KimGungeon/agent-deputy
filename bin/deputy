@@ -315,15 +315,16 @@ def list_issues(state="open", labels=None, limit=200):
     return gh(args, parse=True) or []
 
 
-def active_issues():
+def active_issues(cfg=None):
     """
     목록 + 진행 중인 것들. 목록 상한에서 밀려나 진행 중이던 작업이 사라지면
     세션이 '할 일 없음'으로 오판하고 새 일을 벌인다. 그래서 wip 은 따로 합친다.
+    후보 라벨이 정해져 있으면 그 라벨의 이슈도 따로 합친다(상한에 밀려 빠지지 않게).
     """
     seen = {}
     for i in list_issues():
         seen[i["number"]] = i
-    for lb in ("deputy:wip", "deputy:agreed", "deputy:next"):
+    for lb in ("deputy:wip", "deputy:agreed", "deputy:next", *candidate_labels(cfg)):
         for i in list_issues(labels=[lb], limit=100):
             seen.setdefault(i["number"], i)
     return list(seen.values())
@@ -344,6 +345,28 @@ def issue(num, cached=False, check=True):
     if cached and d:
         ISSUE_CACHE[num] = d
     return d
+
+
+def candidate_labels(cfg):
+    """설정의 candidate_labels. 비어 있으면 필터 없음(모든 열린 이슈가 후보)."""
+    return [str(x) for x in ((cfg or {}).get("candidate_labels") or []) if str(x).strip()]
+
+
+def is_candidate(cfg, iss):
+    """
+    새 작업 후보인가. deputy 라벨이 없고 배정되지 않았으며, 후보 라벨이 정해져 있으면
+    그중 하나가 붙어 있어야 한다. 밤에 특정 요청(예: 직원요청)만 처리하게 할 때 쓴다.
+    """
+    names = label_names(iss)
+    if names & set(LABELS) or iss.get("assignees"):
+        return False
+    want = candidate_labels(cfg)
+    return not want or bool(names & set(want))
+
+
+def filter_note(cfg):
+    want = candidate_labels(cfg)
+    return f"후보 라벨({', '.join(want)})이 붙은 이슈만 다룹니다." if want else ""
 
 
 def label_names(iss):
@@ -804,6 +827,12 @@ def cmd_init(cfg_unused, args):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
         print(f"  설정: .deputy/deputy.json  멤버 {', '.join(members(cfg))}")
+
+    if getattr(args, "candidate_label", None):
+        cfg["candidate_labels"] = list(dict.fromkeys(args.candidate_label))
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({k: v for k, v in cfg.items() if not k.startswith("_")}, f, indent=2, ensure_ascii=False)
+        print(f"  후보 라벨: {', '.join(cfg['candidate_labels'])}")
 
     # 2) 라벨
     made = 0
@@ -1561,13 +1590,21 @@ def next_for_coordinator(cfg, me, full, active, out):
         out.append("")
 
     # 4순위: 백로그 관리. 구현 대신 이걸 한다.
-    cand = sorted([i for i in active
-                   if not (label_names(i) & set(LABELS)) and not i["assignees"]],
-                  key=lambda x: x["number"])
+    cand = sorted([i for i in active if is_candidate(cfg, i)], key=lambda x: x["number"])
     if not out:
         out.append("[4순위] 급한 게 없습니다. 백로그를 손보세요.")
         out.append("")
-        if len(cand) < 3:
+        if candidate_labels(cfg) and not cand:
+            out.append(f"  {filter_note(cfg)} 지금은 후보가 없습니다.")
+            out.append("  새 작업을 발굴하지 않습니다. 할 일이 끝났으면 이번 턴을 마칩니다.")
+        elif candidate_labels(cfg):
+            out.append(f"  {filter_note(cfg)} 후보 {len(cand)}건:")
+            for i in cand[:10]:
+                out.append(f"    · #{i['number']} {i['title']}")
+            out.append("  확인할 것:")
+            out.append("    · 너무 커서 한 번에 못 끝낼 이슈가 있는가 → 쪼갠다")
+            out.append("    · 근거나 완료 기준이 없는 이슈가 있는가 → 코멘트로 채운다")
+        elif len(cand) < 3:
             out.append(f"  후보 이슈가 {len(cand)}건뿐입니다. 세션들이 곧 할 일을 잃습니다.")
             out.append("  코드를 읽고 다음 작업을 발굴해 이슈로 등록하세요:")
             out.append('    gh issue create --title "..." --body "왜 필요한지와 완료 기준"')
@@ -1603,7 +1640,7 @@ def cmd_next(cfg, args):
         print(f"담당: {', '.join(mc['owns'])}  (이 밖의 파일은 수정 금지)")
     print()
 
-    active = active_issues()
+    active = active_issues(cfg)
     full, skipped = {}, []
     for i in active:
         d = issue(i["number"], cached=True, check=False)
@@ -1772,9 +1809,7 @@ def cmd_next(cfg, args):
             out.append("  · 재현 케이스나 실패하는 테스트를 먼저 써둔다")
             out.append("  · 알아낸 것을 deputy note 로 이슈에 남긴다 (사람이 폰으로 읽습니다)")
         else:
-            cand = sorted([i for i in active
-                           if not (label_names(i) & set(LABELS)) and not i["assignees"]],
-                          key=lambda x: x["number"])
+            cand = sorted([i for i in active if is_candidate(cfg, i)], key=lambda x: x["number"])
             out.append("[새 작업] 막고 있는 것도 진행 중인 것도 없습니다. 다음 작업을 제안하세요.")
             out.append("")
             if cand:
@@ -1795,6 +1830,9 @@ def cmd_next(cfg, args):
                 out.append("  큰 이슈를 그대로 붙잡으면 컨텍스트가 넘쳐 세션이 멈춥니다.")
                 out.append("")
                 out.append("근거 없는 제안은 리뷰에서 막힙니다. 대안을 최소 하나 비교하세요.")
+            elif candidate_labels(cfg):
+                out.append(f"후보 이슈가 없습니다. {filter_note(cfg)}")
+                out.append("  새 작업을 발굴하지 않습니다. 할 일이 끝났으면 이번 턴을 마칩니다.")
             else:
                 out.append("후보 이슈가 없습니다. 할 일이 정말 없다면:")
                 out.append("  · 작업 중 발견한 문제를 gh issue create 로 등록하고")
@@ -2080,6 +2118,69 @@ def watch_state_path():
     return os.path.join(d, "watch-state.json")
 
 
+STOP_KEY = "_stopped"   # watch-state.json 안에서 멈춘 프로젝트를 적어 두는 키
+
+
+def is_stopped(root):
+    hist = read_json(watch_state_path(), {}) or {}
+    return root in (hist.get(STOP_KEY) or {})
+
+
+def set_stopped(root, on):
+    path = watch_state_path()
+    hist = read_json(path, {}) or {}
+    marks = hist.get(STOP_KEY) or {}
+    if on:
+        marks[root] = stamp()
+    else:
+        marks.pop(root, None)
+    hist[STOP_KEY] = marks
+    write_json(path, hist)
+
+
+def has_work(cfg):
+    """
+    되살릴 가치가 있는가. 후보도 없고 진행 중인 deputy 이슈도 없으면, 되살린 세션은
+    '할 일 없음'을 보고하고 바로 끝난다. 그걸 쿨다운마다 반복하면 토큰만 탄다.
+    """
+    busy = {"deputy:next", "deputy:agreed", "deputy:wip", "deputy:revise", "deputy:blocked"}
+    for i in active_issues(cfg):
+        if is_candidate(cfg, i) or (label_names(i) & busy and "deputy:epic" not in label_names(i)):
+            return True
+    return False
+
+
+def cmd_stop(cfg, args):
+    """
+    이 프로젝트의 deputy 백그라운드 세션을 끝내고 멈춤 표시를 남긴다. 표시가 있는 동안
+    deputy watch 는 되살리지 않는다. 정해진 시각에 확실히 끝내야 할 때(밤 운영의 아침) 쓴다.
+    deputy-up.sh 로 다시 시작하면 표시가 지워진다. --resume 은 표시만 지운다.
+    """
+    root = repo_root()
+    if args.resume:
+        set_stopped(root, False)
+        print(f"=== deputy stop --resume :: {os.path.basename(root)} === 멈춤 표시를 지웠습니다.")
+        return
+    set_stopped(root, True)  # 먼저 표시한다. 끄는 사이 watch 가 되살리지 않게
+    out = gh_free(["claude", "agents", "--json", "--cwd", root])
+    try:
+        rows = json.loads(out or "[]")
+        rows = rows if isinstance(rows, list) else rows.get("agents", rows.get("sessions")) or []
+    except (TypeError, ValueError, AttributeError):
+        rows = []
+    stopped = []
+    for a in rows:
+        if not isinstance(a, dict) or not a.get("id") or not same_project(a.get("cwd"), root):
+            continue
+        if not str(a.get("name") or "").startswith("deputy-"):
+            continue
+        gh_free(["claude", "stop", a["id"]], timeout=20)
+        stopped.append(a["name"])
+    print(f"=== deputy stop :: {os.path.basename(root)} ===  {stamp()}")
+    print(f"  끈 세션: {', '.join(stopped) or '없음'}")
+    print("  멈춤 표시를 남겼습니다. deputy watch 는 되살리지 않습니다. 다시 시작: deputy-up.sh")
+
+
 def watch_action(state, job, last_started, now, grace, cooldown):
     """Choose an action without I/O. Session timestamps are milliseconds.
 
@@ -2114,6 +2215,18 @@ def cmd_watch(cfg, args):
     다시 죽으면서 토큰만 태운다. 멤버당 최소 간격을 둔다.
     """
     root = repo_root()
+    if is_stopped(root):
+        print(f"=== deputy watch :: {os.path.basename(root)} ===  {stamp()}")
+        print("  멈춤 상태입니다(deputy stop). 되살리지 않습니다. 다시 시작: deputy-up.sh")
+        return watch_loop(cfg, args)
+    try:
+        work = has_work(cfg)
+    except SystemExit:
+        work = True  # 이슈를 못 읽었으면 판단하지 않고 평소대로 점검한다
+    if not work:
+        print(f"=== deputy watch :: {os.path.basename(root)} ===  {stamp()}")
+        print(f"  할 일이 없어 되살리지 않습니다. {filter_note(cfg)}".rstrip())
+        return watch_loop(cfg, args)
     up = os.path.join(PKG_DIR, "bin", "deputy-up.sh")
     if not os.path.exists(up):
         die(f"{up} 을 찾을 수 없습니다.")
@@ -2218,16 +2331,119 @@ def cmd_watch(cfg, args):
     elif acted:
         print(f"\n  {len(succeeded)}개 재기동했습니다. 실패 {len(failed)}개.")
 
-    if args.loop:
-        print(f"\n  {args.loop}초 뒤 다시 점검합니다. Ctrl+C 로 중단.")
-        while True:
-            time.sleep(args.loop)
-            try:
-                cmd_watch(cfg, argparse.Namespace(**{**vars(args), "loop": 0}))
-            except SystemExit:
-                pass
-            except Exception as e:
-                print(f"  점검 실패: {e}")
+    watch_loop(cfg, args)
+
+
+def watch_loop(cfg, args):
+    if not args.loop:
+        return
+    print(f"\n  {args.loop}초 뒤 다시 점검합니다. Ctrl+C 로 중단.")
+    while True:
+        time.sleep(args.loop)
+        try:
+            cmd_watch(cfg, argparse.Namespace(**{**vars(args), "loop": 0}))
+        except SystemExit:
+            pass
+        except Exception as e:
+            print(f"  점검 실패: {e}")
+
+
+AC_INDEX = re.compile(r"AC[^\n:]*:\s*0x([0-9a-fA-F]+)")
+
+
+def ac_standby_seconds(text):
+    """powercfg /query ... STANDBYIDLE 출력에서 교류 전원 절전 시간(초). 못 읽으면 None. 한글/영문 모두."""
+    m = AC_INDEX.search(text or "")
+    return int(m.group(1), 16) if m else None
+
+
+def _minutes(hhmm):
+    m = re.fullmatch(r"(\d{2}):(\d{2})", hhmm or "")
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError(f"시각은 HH:MM 이어야 합니다: {hhmm!r}")
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def _hhmm(minutes):
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def schedule_plan(root, start, stop, every, python, deputy, bash, up, folder, log):
+    """
+    Windows 작업 스케줄러에 만들 작업 셋. 시작(deputy-up.sh), 감시(every 분마다 deputy watch),
+    종료(deputy stop). 감시는 시작 한 간격 뒤부터 종료 한 간격 전까지 돈다. 시작과 같은 시각에
+    돌면 막 띄운 세션을 '없음'으로 보고 한 번 더 띄운다. 자정을 넘는 구간도 된다.
+    """
+    import ntpath
+    a, b = _minutes(start), _minutes(stop)
+    window = (b - a) % 1440
+    if window == 0:
+        raise ValueError("시작과 종료 시각이 같습니다")
+    if every < 1 or window <= 2 * every:
+        raise ValueError(f"감시 간격 {every}분이 운영 시간 {window}분에 비해 너무 깁니다")
+    name = os.path.basename(root.replace("\\", "/").rstrip("/")) or "repo"
+    head = f'@echo off\r\nchcp 65001 >nul\r\ncd /d "{root}"\r\necho [%date% %time%] {{kind}} >> "{log}"\r\n'
+    fwd = lambda x: x.replace("\\", "/")
+    runs = {
+        "start": (start, [], f'"{bash}" "{fwd(up)}" "{fwd(root)}" >> "{log}" 2>&1\r\n'),
+        "watch": (_hhmm((a + every) % 1440), ["/RI", str(every), "/DU", _hhmm(window - 2 * every)],
+                  f'"{python}" "{deputy}" watch >> "{log}" 2>&1\r\n'),
+        "stop": (stop, [], f'"{python}" "{deputy}" stop >> "{log}" 2>&1\r\n'),
+    }
+    plan = []
+    for kind, (at, extra, line) in runs.items():
+        file = ntpath.join(folder, f"{name}-{kind}.cmd")
+        plan.append({"task": f"\\deputy\\{name}\\{kind}", "file": file,
+                     "script": head.format(kind=kind) + line,
+                     "args": ["/Create", "/F", "/TN", f"\\deputy\\{name}\\{kind}", "/TR", f'"{file}"',
+                              "/SC", "DAILY", "/ST", at, *extra]})
+    return plan
+
+
+def cmd_schedule(cfg, args):
+    """
+    정한 시간대에만 무인 운영한다. Windows 는 작업 스케줄러에 작업 셋을 만든다(로그인해 있어야 돈다).
+    다른 OS 는 같은 일을 하는 cron 줄을 보여 준다.
+    """
+    root = repo_root()
+    deputy = os.path.join(PKG_DIR, "bin", "deputy")
+    up = os.path.join(PKG_DIR, "bin", "deputy-up.sh")
+    name = os.path.basename(root)
+    log = os.path.join(HOME, ".deputy", f"{name}-schedule.log")
+    try:
+        plan = schedule_plan(root, args.start, args.stop, args.every, sys.executable, deputy,
+                             shutil.which("bash") or "bash", up,
+                             os.path.join(HOME, ".deputy", "schedule"), log)
+    except ValueError as e:
+        die(str(e))
+    if sys.platform != "win32":
+        a, b = _minutes(args.start), _minutes(args.stop)
+        print("cron 에 다음 줄을 넣으세요 (crontab -e):")
+        print(f"  {a % 60} {a // 60} * * * cd {root} && {up} >> {log} 2>&1")
+        print(f"  */{args.every} * * * * cd {root} && {deputy} watch >> {log} 2>&1   # 운영 시간 밖에는 stop 표시가 막는다")
+        print(f"  {b % 60} {b // 60} * * * cd {root} && {deputy} stop >> {log} 2>&1")
+        return
+    if args.remove:
+        for p in plan:
+            r = subprocess.run(["schtasks", "/Delete", "/F", "/TN", p["task"]], capture_output=True)
+            print(f"  {'지움' if r.returncode == 0 else '없음'}  {p['task']}")
+        return
+    print(f"=== deputy schedule :: {name} ===  {args.start} 시작, {args.every}분마다 감시, {args.stop} 종료")
+    for p in plan:
+        print(f"  {p['task']:<28} {' '.join(p['args'][p['args'].index('/SC'):])}")
+        if args.dry:
+            continue
+        os.makedirs(os.path.dirname(p["file"]), exist_ok=True)
+        with open(p["file"], "w", encoding="utf-8", newline="") as f:
+            f.write(p["script"])
+        r = subprocess.run(["schtasks", *p["args"]], capture_output=True, text=True, errors="replace")
+        if r.returncode != 0:
+            die(f"작업을 만들지 못했습니다: {p['task']} {(r.stderr or r.stdout).strip()[:200]}")
+    if args.dry:
+        print("\n  [--dry] 아무것도 만들지 않았습니다.")
+        return
+    print(f"\n  로그: {log}")
+    print("  PC 가 켜져 있고 로그인(화면 잠금은 괜찮음)해 있어야 돕니다. 지우기: deputy schedule --remove")
 
 
 def cmd_status(cfg, args):
@@ -2348,8 +2564,12 @@ def cmd_doctor(cfg, args):
         "deputy 라벨 준비됨" if not miss else f"라벨 누락: {', '.join(sorted(miss))} → `deputy init --force`")
 
     open_issues = list_issues()
-    free = [i for i in open_issues
-            if not (label_names(i) & set(LABELS)) and not i["assignees"]]
+    if candidate_labels(cfg):
+        for lb in candidate_labels(cfg):
+            for i in list_issues(labels=[lb], limit=100):
+                if all(i["number"] != o["number"] for o in open_issues):
+                    open_issues.append(i)
+    free = [i for i in open_issues if is_candidate(cfg, i)]
 
     orphans = [i for i in open_issues
                if not (label_names(i) & set(LABELS)) and i["assignees"]]
@@ -2365,8 +2585,10 @@ def cmd_doctor(cfg, args):
     if free or planned:
         ok.append(f"할 일 있음 — 백로그 {len(free)}건, 진행 대상 {len(planned)}건")
     else:
-        bad.append("열린 이슈가 없습니다 → 세션이 할 일을 못 찾습니다. "
-                   "이슈를 만들거나 에픽을 분해하세요")
+        bad.append((f"할 일이 없습니다. {filter_note(cfg)} → 세션을 띄우지 않습니다"
+                    if candidate_labels(cfg) else
+                    "열린 이슈가 없습니다 → 세션이 할 일을 못 찾습니다. "
+                    "이슈를 만들거나 에픽을 분해하세요"))
 
     seen = {}
     if not coordinators(cfg):
@@ -2404,6 +2626,19 @@ def cmd_doctor(cfg, args):
                             encoding="utf-8").stdout
         (ok if "AC Power" in pm else bad).append(
             "F-01 전원 연결됨" if "AC Power" in pm else "F-01 배터리 동작 중 → 전원을 연결하세요")
+    elif sys.platform == "win32":
+        try:
+            pc = subprocess.run(["powercfg", "/query", "SCHEME_CURRENT", "SUB_SLEEP", "STANDBYIDLE"],
+                                capture_output=True, text=True, errors="replace").stdout
+        except OSError:
+            pc = ""
+        secs = ac_standby_seconds(pc)
+        if secs == 0:
+            ok.append("F-01 전원 연결 시 절전 안 함")
+        elif secs is None:
+            warn.append("F-01 절전 설정을 읽지 못했습니다 → 전원 옵션에서 '절전 안 함'인지 확인하세요")
+        else:
+            bad.append(f"F-01 전원 연결 시 {secs // 60}분 뒤 절전 → `powercfg /change standby-timeout-ac 0`")
 
     us = {}
     try:
@@ -2463,6 +2698,8 @@ def main_parser():
                    help="프로젝트 설정 병합을 건너뛴다")
     s.add_argument("--no-user-settings", dest="user_settings", action="store_false",
                    help="개인 설정 병합을 건너뛴다")
+    s.add_argument("--candidate-label", action="append", metavar="LABEL",
+                   help="이 라벨이 붙은 이슈만 새 작업 후보로 본다 (여러 번 줄 수 있다)")
     s.set_defaults(fn=cmd_init, needs_cfg=False, skills=True, settings=True,
                    user_settings=True, coordinator=True)
 
@@ -2632,6 +2869,28 @@ def main_parser():
     s.add_argument("--grace", type=int, default=180, metavar="SEC",
                    help="기동 직후 busy 가 아니어도 봐주는 시간 (기본 180초)")
     s.set_defaults(fn=cmd_watch)
+
+    s = add("stop", "이 프로젝트의 deputy 세션을 끝내고 watch 가 되살리지 않게 한다", """
+  deputy stop              세션을 끄고 멈춤 표시를 남긴다
+  deputy stop --resume     멈춤 표시만 지운다 (deputy-up.sh 가 시작할 때 자동으로 한다)
+""")
+    s.add_argument("--resume", action="store_true", help="멈춤 표시만 지운다")
+    s.set_defaults(fn=cmd_stop)
+
+    s = add("schedule", "정한 시간대에만 무인 운영한다 (Windows 작업 스케줄러, 그 밖은 cron 안내)", """
+  deputy schedule --start 00:00 --stop 09:30            밤 운영
+  deputy schedule --start 00:00 --stop 09:30 --dry      만들 작업만 본다
+  deputy schedule --remove                              지운다
+
+  시작에 deputy-up.sh, 감시 간격마다 deputy watch, 종료에 deputy stop 을 실행한다.
+  사용량이 몇 시간 단위 창으로 묶여 있으면, 종료 시각을 낮에 쓸 창 앞에 둔다.
+""")
+    s.add_argument("--start", default="00:00", help="시작 시각 HH:MM (기본 00:00)")
+    s.add_argument("--stop", default="09:30", help="종료 시각 HH:MM (기본 09:30)")
+    s.add_argument("--every", type=int, default=10, metavar="MIN", help="감시 간격(분, 기본 10)")
+    s.add_argument("--dry", action="store_true", help="만들지 않고 보여만 준다")
+    s.add_argument("--remove", action="store_true", help="만든 작업을 지운다")
+    s.set_defaults(fn=cmd_schedule)
 
     s = add("status", "전체 현황", """
   deputy status
