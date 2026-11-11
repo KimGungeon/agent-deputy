@@ -51,12 +51,16 @@ fi
 if [ -z "${QUIET:-}" ]; then
 echo
 echo "=== 2/4 절전 차단 ==="
-if pgrep -x caffeinate >/dev/null; then
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "  macOS 가 아니라 건너뜀 (Windows 는 deputy doctor 의 F-01 이 전원 설정을 확인합니다)"
+elif pgrep -x caffeinate >/dev/null; then
   echo "  이미 실행 중"
 else
   caffeinate -dimsu &
   echo "  caffeinate 시작 (pid $!)"
 fi
+# deputy stop 이 남긴 멈춤 표시를 지운다. 지우지 않으면 deputy watch 가 되살리지 않는다.
+"$DEPUTY" stop --resume >/dev/null 2>&1 || true
 
 fi
 

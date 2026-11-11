@@ -176,6 +176,28 @@ gh pr list           # 올라온 작업
 deputy log -n 40       # 무슨 논의가 있었는지
 ```
 
+### 밤에만 돌리기 (특정 라벨의 요청만)
+
+낮에 쌓인 요청을 밤사이 처리하고, 정한 시각에 확실히 멈추게 할 수 있다.
+
+```bash
+deputy init --candidate-label 직원요청             # 이 라벨이 붙은 이슈만 새 작업 후보
+deputy schedule --start 00:00 --stop 09:30         # 시작, 10분마다 감시, 종료
+deputy schedule --start 00:00 --stop 09:30 --dry   # 만들 작업만 본다
+deputy schedule --remove                           # 지운다
+```
+
+- **후보 라벨:** `.deputy/deputy.json`의 `candidate_labels`에 라벨이 있으면, 그중 하나가 붙은 이슈만 새 작업 후보가 된다. 이 상태에서는 후보가 없어도 세션이 새 이슈를 발굴하지 않는다. 라벨이 없으면 지금처럼 열린 이슈가 전부 후보다.
+- **`deputy stop`:**
+  - 이 프로젝트의 deputy 세션을 끄고 멈춤 표시를 남긴다. 표시가 있는 동안 `deputy watch`는 되살리지 않는다.
+  - `deputy-up.sh`로 시작하면 표시가 지워진다.
+- **watch가 되살리지 않는 경우:** 후보도 없고 진행 중인 deputy 이슈도 없으면 되살리지 않는다. 할 일 없이 뜨고 끝나기를 반복하면서 토큰만 쓰지 않게 하려는 것이다.
+- **`deputy schedule`:**
+  - Windows에서는 작업 스케줄러에 `\deputy\<저장소>\start|watch|stop` 작업을 만든다. 감시는 시작 한 간격 뒤부터 종료 한 간격 전까지 돈다. 작업은 로그인해 있어야 돈다(화면 잠금은 괜찮다). 로그는 `~/.deputy/<저장소>-schedule.log`에 남는다.
+  - 다른 OS에서는 같은 일을 하는 cron 줄을 보여 준다.
+- **사용량 창:** 사용량이 몇 시간 단위 창으로 묶여 있으면 종료 시각을 낮에 쓸 창 앞에 둔다. 예를 들어 00:00에 시작하면 00~05시, 05~10시 창을 쓰고, 10시에 새 창이 열린다.
+- **Windows 절전:** `deputy doctor`의 F-01이 전원 연결 시 절전 시간을 확인한다(`powercfg`).
+
 ---
 
 ## 이슈 하나만 지목할 때
@@ -287,6 +309,8 @@ deputy derive <부모번호> --why "무엇을 발견했나" \
 | `deputy ack <n>` | 사람 코멘트 반영을 세션별로 기록 |
 | `deputy status` | 전체 현황 |
 | `deputy doctor` | 무인 운영 전 점검 |
+| `deputy stop` | 세션을 끄고 watch 가 되살리지 않게 한다 (`--resume` 으로 해제) |
+| `deputy schedule` | 정한 시간대에만 무인 운영 (Windows 작업 스케줄러, 그 밖은 cron 안내) |
 
 ---
 

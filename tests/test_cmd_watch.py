@@ -61,6 +61,7 @@ class TestCmdWatch(unittest.TestCase):
                 "session_states": dict(return_value=states),
                 "job_details": dict(return_value=jobs or {}),
                 "gh_free": {},
+                "has_work": dict(return_value=True),
             }
             mocks = {name: stack.enter_context(mock.patch.object(deputy, name, **kwargs))
                      for name, kwargs in patches.items()}
