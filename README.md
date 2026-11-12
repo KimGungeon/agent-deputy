@@ -306,6 +306,7 @@ deputy derive <부모번호> --why "무엇을 발견했나" \
 | `deputy derive <n>` | 파생 이슈 생성 |
 | `deputy done <n>` | 완료 처리 |
 | `deputy note <n>` | 이슈에 메모 |
+| `deputy await <n>` | 사람에게 묻고, 답(코멘트)이 올 때까지 후보에서 뺀다 |
 | `deputy ack <n>` | 사람 코멘트 반영을 세션별로 기록 |
 | `deputy status` | 전체 현황 |
 | `deputy doctor` | 무인 운영 전 점검 |
