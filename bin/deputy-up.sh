@@ -5,6 +5,15 @@
 # 하는 일: 점검 → 절전 차단 → 멤버별 백그라운드 세션 기동(목표 부착)
 set -euo pipefail
 
+# Windows 작업 스케줄러가 Git\usr\bin\bash.exe 를 로그인 셸 없이 부르면 PATH 에 /usr/bin 이
+# 없어 dirname 같은 기본 명령을 못 찾고 여기서 바로 끝난다. 그러면 아래의 stop --resume 까지
+# 못 가서 멈춤 표시가 남고, watch 도 되살리지 않는다. 없을 때만 뒤에 붙인다(macOS 의
+# homebrew 같은 앞쪽 경로를 가리지 않게).
+case ":$PATH:" in
+  *:/usr/bin:*) ;;
+  *) PATH="$PATH:/usr/bin:/bin"; export PATH ;;
+esac
+
 # Windows(cp949 등) 로케일에서 python3 -c 의 stdout 이 파이프로 캡처될 때
 # UTF-8 이 아니라 로케일 코드페이지로 인코딩되어, 한글 brief/owns 가 깨진
 # 바이트로 $PROMPT 에 섞여 들어간다. 이 깨진 텍스트가 claude --bg 의 인자로
