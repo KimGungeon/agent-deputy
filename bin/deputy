@@ -2226,6 +2226,45 @@ def watch_action(state, job, last_started, now, grace, cooldown):
     return "restart"
 
 
+def git_bash(which=shutil.which, isfile=os.path.isfile, platform=sys.platform, env=os.environ):
+    """
+    deputy-up.sh 를 돌릴 bash. Windows 에서는 Git for Windows 의 bin\\bash.exe 를 고른다.
+    - "bash" 를 이름만으로 실행하면 WSL 이 설치된 Windows 에서 CreateProcess 가 PATH 대신
+      레지스트리 App Paths 를 먼저 봐 System32 의 WSL bash 로 뒤바뀐다. WSL bash 는 루트가
+      달라(/mnt/c/...) Git-bash 스타일 경로를 못 찾는다. 작업 스케줄러 환경에서는 which 도
+      WSL bash 를 잡을 수 있다(첫 밤 watch: "/bin/bash: ...deputy-up.sh: No such file").
+    - Git\\usr\\bin\\bash.exe 는 로그인 셸이 아니면 PATH 에 /usr/bin 을 넣지 않아 dirname 같은
+      기본 명령이 없다. Git\\bin\\bash.exe 는 그 환경을 잡아 주는 실행기다.
+    """
+    if platform != "win32":
+        return which("bash") or "bash"
+    import ntpath
+    roots = []
+    for name in ("git", "bash"):
+        found = which(name)
+        if not found:
+            continue
+        # ...\Git\cmd\git.exe, ...\Git\bin\bash.exe, ...\Git\usr\bin\bash.exe, ...\Git\mingw64\bin\git.exe
+        p = ntpath.dirname(found)
+        for _ in range(3):
+            roots.append(p)
+            p = ntpath.dirname(p)
+    for var in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        if env.get(var):
+            roots.append(ntpath.join(env[var], "Git"))
+    if env.get("LOCALAPPDATA"):
+        roots.append(ntpath.join(env["LOCALAPPDATA"], "Programs", "Git"))
+    for r in roots:
+        cand = ntpath.join(r, "bin", "bash.exe")
+        if isfile(cand) and isfile(ntpath.join(r, "usr", "bin", "bash.exe")):
+            return cand
+    found = which("bash")
+    system = (env.get("SystemRoot") or env.get("WINDIR") or "C:\\Windows").lower()
+    if found and not found.lower().startswith(system):
+        return found
+    return "bash"
+
+
 def cmd_watch(cfg, args):
     """
     죽었거나 멈춘 세션을 되살린다.
@@ -2260,12 +2299,7 @@ def cmd_watch(cfg, args):
     # Windows: bash(MSYS)에 인자로 넘기는 경로는 백슬래시를 자기 이스케이프
     # 문자로 먹어버려 "C:\...\deputy-up.sh" 가 "C:...deputy-up.sh" 로 깨진다.
     up_for_bash = up.replace(os.sep, "/") if sys.platform == "win32" else up
-    # "bash" 를 이름만으로 실행하면, WSL 이 설치된 Windows 에서는 CreateProcess 가
-    # PATH 대신 레지스트리 App Paths 를 먼저 봐서 Git bash 가 아니라 System32 의
-    # WSL bash 로 뒤바뀐다. WSL bash 는 파일시스템 루트가 아예 달라(/mnt/c/...)
-    # 위에서 만든 Git-bash 스타일 경로를 못 찾는다. shutil.which 로 실제 PATH 순서
-    # 그대로의 bash 를 못박아 이 뒤바뀜을 피한다.
-    bash_exe = shutil.which("bash") or "bash"
+    bash_exe = git_bash()
 
     st_path = watch_state_path()
     hist = read_json(st_path, {}) or {}
@@ -2439,7 +2473,7 @@ def cmd_schedule(cfg, args):
     log = os.path.join(HOME, ".deputy", f"{name}-schedule.log")
     try:
         plan = schedule_plan(root, args.start, args.stop, args.every, sys.executable, deputy,
-                             shutil.which("bash") or "bash", up,
+                             git_bash(), up,
                              os.path.join(HOME, ".deputy", "schedule"), log)
     except ValueError as e:
         die(str(e))

@@ -192,5 +192,44 @@ class TestSchedule(unittest.TestCase):
                                 bash="b", up="u", folder="f", log="l")
 
 
+class TestGitBash(unittest.TestCase):
+    ENV = {"ProgramFiles": "C:\\Program Files", "SystemRoot": "C:\\Windows"}
+    GIT = "C:\\Program Files\\Git"
+
+    def pick(self, found, files, env=None):
+        return d.git_bash(which=lambda n: found.get(n), isfile=lambda p: p in files,
+                          platform="win32", env=env if env is not None else self.ENV)
+
+    def test_prefers_git_bin_launcher_over_usr_bin_bash(self):
+        files = {f"{self.GIT}\\bin\\bash.exe", f"{self.GIT}\\usr\\bin\\bash.exe"}
+        got = self.pick({"bash": f"{self.GIT}\\usr\\bin\\bash.exe"}, files, env={})
+        self.assertEqual(got, f"{self.GIT}\\bin\\bash.exe")
+
+    def test_finds_git_bash_from_git_cmd_when_path_bash_is_wsl(self):
+        files = {f"{self.GIT}\\bin\\bash.exe", f"{self.GIT}\\usr\\bin\\bash.exe",
+                 "C:\\Windows\\System32\\bash.exe"}
+        got = self.pick({"bash": "C:\\Windows\\System32\\bash.exe", "git": f"{self.GIT}\\cmd\\git.exe"},
+                        files, env={})
+        self.assertEqual(got, f"{self.GIT}\\bin\\bash.exe")
+
+    def test_falls_back_to_program_files(self):
+        files = {f"{self.GIT}\\bin\\bash.exe", f"{self.GIT}\\usr\\bin\\bash.exe"}
+        self.assertEqual(self.pick({}, files), f"{self.GIT}\\bin\\bash.exe")
+
+    def test_never_returns_system32_wsl_bash(self):
+        got = self.pick({"bash": "C:\\Windows\\System32\\bash.exe"}, {"C:\\Windows\\System32\\bash.exe"})
+        self.assertEqual(got, "bash")
+
+    def test_other_platforms_use_path_bash(self):
+        self.assertEqual(d.git_bash(which=lambda n: "/bin/bash", platform="linux"), "/bin/bash")
+
+
+class TestUpScriptPath(unittest.TestCase):
+    def test_up_script_restores_usr_bin_before_using_dirname(self):
+        up = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "deputy-up.sh")
+        text = open(up, encoding="utf-8").read()
+        self.assertLess(text.index('PATH="$PATH:/usr/bin:/bin"'), text.index('$(dirname '))
+
+
 if __name__ == "__main__":
     unittest.main()
